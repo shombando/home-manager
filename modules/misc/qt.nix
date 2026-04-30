@@ -8,6 +8,10 @@
 let
   cfg = config.qt;
 
+  qtctFormat = pkgs.formats.ini {
+    listToValue = values: lib.concatStringsSep ", " values;
+  };
+
   # Map platform names to their packages.
   platformPackages = with pkgs; {
     gnome = [
@@ -88,7 +92,6 @@ in
 {
   meta.maintainers = with lib.maintainers; [
     rycee
-    thiagokokada
   ];
 
   imports = [
@@ -286,7 +289,34 @@ in
           '';
         };
       };
-    };
+    }
+    // (lib.genAttrs' [ "qt5ct" "qt6ct" ] (
+      name:
+      lib.nameValuePair "${name}Settings" (
+        lib.mkOption {
+          type = lib.types.nullOr qtctFormat.type;
+          default = null;
+          example = lib.literalExpression ''
+            {
+              Appearance = {
+                style = "kvantum";
+                icon_theme = "Papirus-Dark";
+                standard_dialogs = "xdgdesktopportal";
+              };
+              Fonts = {
+                fixed = "\"DejaVuSansM Nerd Font Mono,12\"";
+                general = "\"DejaVu Sans,12\"";
+              };
+            }
+          '';
+          description = ''
+            Qtct configuration. Writes settings to `${name}/${name}.conf`
+            file. Lists will be translated to comma-separated strings.
+            Fonts must be quoted (see example).
+          '';
+        }
+      )
+    ));
   };
 
   config =
@@ -319,11 +349,11 @@ in
           {
             option = "qt.platformTheme.name";
             name = deprecateKde6 cfg.platformTheme.name "qt.platformTheme.name";
-            package = cfg.platformTheme.package;
+            inherit (cfg.platformTheme) package;
           };
 
       # Necessary because home.sessionVariables doesn't support mkIf
-      envVars = lib.filterAttrs (n: v: v != null) {
+      envVars = lib.filterAttrs (_n: v: v != null) {
         QT_QPA_PLATFORMTHEME =
           if (platformTheme.name != null) then
             styleNames.${platformTheme.name} or platformTheme.name
@@ -397,5 +427,18 @@ in
       ]
       ++ lib.optionals (platformTheme.name != null) [ "QT_QPA_PLATFORMTHEME" ]
       ++ lib.optionals (cfg.style.name != null) [ "QT_STYLE_OVERRIDE" ];
+
+      xdg.configFile =
+        lib.pipe
+          [ "qt5ct" "qt6ct" ]
+          [
+            (lib.filter (qtct: cfg."${qtct}Settings" != null))
+            (lib.flip lib.genAttrs' (
+              qtct:
+              lib.nameValuePair "${qtct}/${qtct}.conf" {
+                source = qtctFormat.generate "${qtct}-config" cfg."${qtct}Settings";
+              }
+            ))
+          ];
     };
 }

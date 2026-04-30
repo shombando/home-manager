@@ -17,10 +17,16 @@ let
 
   cfg = config.programs.vscode;
 
-  vscodePname = cfg.package.pname;
-  vscodeVersion = cfg.package.version;
+  vscodePname = cfg.package.pname or cfg.pname;
+  vscodeVersion = cfg.package.version or pkgs.vscode.version;
 
   jsonFormat = pkgs.formats.json { };
+
+  libPath =
+    if vscodePname == "antigravity" then
+      "${cfg.package}/lib/antigravity"
+    else
+      "${cfg.package}/lib/vscode";
 
   productInfoPath =
     if
@@ -31,9 +37,9 @@ let
       "${cfg.package}/Applications/${
         cfg.package.passthru.longName or "Code"
       }.app/Contents/Resources/app/product.json"
-    else if lib.pathExists "${cfg.package}/lib/vscode/resources/app/product.json" then
-      # Visual Studio Code, VSCodium, Windsurf, Cursor
-      "${cfg.package}/lib/vscode/resources/app/product.json"
+    else if lib.pathExists "${libPath}/resources/app/product.json" then
+      # Visual Studio Code, VSCodium, Windsurf, Cursor, Antigravity
+      "${libPath}/resources/app/product.json"
     else
       # OpenVSCode Server
       "${cfg.package}/product.json";
@@ -70,6 +76,10 @@ let
       dataFolderName = ".windsurf";
       nameShort = "Windsurf";
     };
+    antigravity = {
+      dataFolderName = ".antigravity";
+      nameShort = "Antigravity";
+    };
   };
 
   configDir = cfg.nameShort;
@@ -81,6 +91,7 @@ let
     else
       "${config.xdg.configHome}/${configDir}/User";
 
+  argvPath = "${extensionDir}/argv.json";
   configFilePath =
     name: "${userDir}/${optionalString (name != "default") "profiles/${name}/"}settings.json";
   tasksFilePath =
@@ -118,10 +129,10 @@ let
     name: server:
     let
       # Remove the disabled field from the server config
-      cleanServer = lib.filterAttrs (n: v: n != "disabled") server;
+      cleanServer = lib.filterAttrs (n: _v: n != "disabled") server;
     in
     {
-      name = name;
+      inherit name;
       value = {
         enabled = !(server.disabled or false);
       }
@@ -278,7 +289,7 @@ let
       };
 
       languageSnippets = mkOption {
-        type = jsonFormat.type;
+        inherit (jsonFormat) type;
         default = { };
         example = {
           haskell = {
@@ -293,7 +304,7 @@ let
       };
 
       globalSnippets = mkOption {
-        type = jsonFormat.type;
+        inherit (jsonFormat) type;
         default = { };
         example = {
           fixme = {
@@ -326,7 +337,7 @@ let
       };
     };
   };
-  defaultProfile = if cfg.profiles ? default then cfg.profiles.default else { };
+  defaultProfile = cfg.profiles.default or { };
   allProfilesExceptDefault = removeAttrs cfg.profiles [ "default" ];
 in
 {
@@ -372,8 +383,23 @@ in
     enable = lib.mkEnableOption "Visual Studio Code";
 
     package = lib.mkPackageOption pkgs "vscode" {
+      nullable = true;
       example = "pkgs.vscodium";
       extraDescription = "Version of Visual Studio Code to install.";
+    };
+
+    pname = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "vscode";
+      description = ''
+        The package name (pname) of the VS Code variant being used.
+        Required when {option}`programs.vscode.package` is set to
+        `null`, so that {option}`programs.vscode.nameShort` and
+        {option}`programs.vscode.dataFolderName` can be derived from
+        known products. Has no effect when
+        {option}`programs.vscode.package` is set.
+      '';
     };
 
     mutableExtensionsDir = mkOption {
@@ -412,6 +438,21 @@ in
       '';
     };
 
+    argvSettings = mkOption {
+      type = types.either types.path jsonFormat.type;
+      default = { };
+      example = literalExpression ''
+        {
+          enable-crash-reporter = false;
+        }
+      '';
+      description = ''
+        Configuration written to Visual Studio Code's
+        {file}`argv.json`.
+        This can be a JSON object or a path to a custom JSON file.
+      '';
+    };
+
     profiles = mkOption {
       type = types.attrsOf profileType;
       default = { };
@@ -423,6 +464,13 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.package != null || cfg.pname != null;
+        message = "programs.vscode.pname must be set when programs.vscode.package is null.";
+      }
+    ];
+
     warnings = [
       (mkIf (allProfilesExceptDefault != { } && cfg.mutableExtensionsDir)
         "programs.vscode.mutableExtensionsDir can be used only if no profiles apart from default are set."
@@ -430,7 +478,7 @@ in
       (mkIf
         (
           (lib.filterAttrs (
-            n: v:
+            _n: v:
             (v ? enableExtensionUpdateCheck || v ? enableUpdateCheck)
             && (v.enableExtensionUpdateCheck != null || v.enableUpdateCheck != null)
           ) allProfilesExceptDefault) != { }
@@ -439,7 +487,7 @@ in
       )
     ];
 
-    home.packages = [ cfg.package ];
+    home.packages = lib.mkIf (cfg.package != null) [ cfg.package ];
 
     # The file `${userDir}/globalStorage/storage.json` needs to be writable by VSCode,
     # since it contains other data, such as theme backgrounds, recently opened folders, etc.
@@ -453,7 +501,7 @@ in
           PATH=${lib.makeBinPath [ pkgs.jq ]}''${PATH:+:}$PATH
           file="${userDir}/globalStorage/storage.json"
           file_write=""
-          profiles=(${lib.escapeShellArgs (flatten (mapAttrsToList (n: v: n) allProfilesExceptDefault))})
+          profiles=(${lib.escapeShellArgs (flatten (mapAttrsToList (n: _v: n) allProfilesExceptDefault))})
 
           if [ -f "$file" ]; then
             existing_profiles=$(jq '.userDataProfiles // [] | map({ (.name): .location }) | add // {}' "$file")
@@ -482,6 +530,14 @@ in
     );
 
     home.file = lib.mkMerge (flatten [
+      (mkIf (cfg.argvSettings != { }) {
+        "${argvPath}".source =
+          if isPath cfg.argvSettings then
+            cfg.argvSettings
+          else
+            jsonFormat.generate "vscode-argv" cfg.argvSettings;
+      })
+
       (mapAttrsToList (n: v: [
         (mkIf ((mergedUserSettings v.userSettings v.enableUpdateCheck v.enableExtensionUpdateCheck) != { })
           {
@@ -517,7 +573,7 @@ in
                     else
                       { };
                   # Merge MCP servers: transformed servers + user servers, with user servers taking precedence
-                  mergedServers = transformedMcpServers // ((v.userMcp.servers or { }));
+                  mergedServers = transformedMcpServers // (v.userMcp.servers or { });
                   # Merge all MCP config
                   mergedMcpConfig =
                     v.userMcp // (lib.optionalAttrs (mergedServers != { }) { servers = mergedServers; });
@@ -579,7 +635,7 @@ in
           # causes VSCode to create the extensions.json with all the extensions
           # in the extension directory, which includes extensions from other profiles.
           lib.mkMerge (
-            lib.concatMap toPaths (flatten (mapAttrsToList (n: v: v.extensions) cfg.profiles))
+            lib.concatMap toPaths (flatten (mapAttrsToList (_n: v: v.extensions) cfg.profiles))
             ++
               lib.optional
                 (
@@ -591,6 +647,7 @@ in
                     ]
                   )
                   && defaultProfile != { }
+                  && cfg.package != null
                 )
                 {
                   # Whenever our immutable extensions.json changes, force VSCode to regenerate
@@ -612,13 +669,14 @@ in
                 combinedExtensionsDrv = pkgs.buildEnv {
                   name = "vscode-extensions";
                   paths =
-                    (flatten (mapAttrsToList (n: v: v.extensions) cfg.profiles))
+                    (flatten (mapAttrsToList (_n: v: v.extensions) cfg.profiles))
                     ++ lib.optional (
                       (
                         lib.versionAtLeast vscodeVersion "1.74.0"
                         || builtins.elem vscodePname [
                           "cursor"
                           "windsurf"
+                          "antigravity"
                         ]
                       )
                       && defaultProfile != { }

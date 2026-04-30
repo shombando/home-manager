@@ -8,7 +8,7 @@
   programs.vicinae = {
     enable = true;
     systemd.enable = true;
-
+    useLayerShell = false;
     settings = {
       faviconService = "twenty";
       font = {
@@ -62,9 +62,9 @@
 
     extensions = [
       (config.lib.vicinae.mkRayCastExtension {
-        name = "gif-search";
-        sha256 = "sha256-G7il8T1L+P/2mXWJsb68n4BCbVKcrrtK8GnBNxzt73Q=";
-        rev = "4d417c2dfd86a5b2bea202d4a7b48d8eb3dbaeb1";
+        name = "cdnjs";
+        sha256 = "sha256-k3YfruMxSOMf8K65iTW84aZxiknADCcntJOAE89agYc=";
+        rev = "ac7c50844bf77d0cf51daa840e369d999f2add59";
       })
       (config.lib.vicinae.mkExtension {
         name = "test-extension";
@@ -80,11 +80,18 @@
     ];
   };
 
+  test.asserts.assertions.expected = [
+    "After version 0.17, if you want to explicitly disable the use of layer shell, you need to set {option}.programs.vicinae.settings.launcher_window.layer_shell.enabled = false."
+  ];
+
   nmt.script = ''
-    assertFileExists      "home-files/.config/vicinae/vicinae.json"
+    assertFileExists      "home-files/.config/vicinae/settings.json"
     assertFileExists      "home-files/.config/systemd/user/vicinae.service"
     assertFileExists      "home-files/.local/share/vicinae/themes/catppuccin-mocha.toml"
-    assertFileExists      "home-files/.local/share/vicinae/extensions/gif-search/package.json"
+    assertFileExists      "home-files/.local/share/vicinae/extensions/cdnjs/package.json"
     assertFileExists      "home-files/.local/share/vicinae/extensions/test-extension/package.json"
+
+    serviceFile=$(normalizeStorePaths "home-files/.config/systemd/user/vicinae.service")
+    assertFileContent  $serviceFile  ${./service.service}
   '';
 }

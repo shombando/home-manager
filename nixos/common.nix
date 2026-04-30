@@ -29,7 +29,7 @@ let
       lib = extendedLib;
       osConfig = config;
       osClass = _class;
-      modulesPath = builtins.toString ../modules;
+      modulesPath = toString ../modules;
     }
     // cfg.extraSpecialArgs;
 
@@ -53,9 +53,16 @@ let
             };
 
             home = {
+              uid =
+                let
+                  # `users.users.<name>.uid` may be declared but unset on
+                  # nix-darwin, so probe it with `tryEval` instead of forcing a
+                  # no-value-defined error during module evaluation.
+                  userUid = builtins.tryEval config.users.users.${name}.uid;
+                in
+                mkIf (userUid.success && userUid.value != null) userUid.value;
               username = config.users.users.${name}.name;
               homeDirectory = config.users.users.${name}.home;
-              uid = mkIf (options.users.users.${name}.uid.isDefined or false) config.users.users.${name}.uid;
             };
 
             nix = {
@@ -68,7 +75,9 @@ let
 
               # Make activation script use same version of Nix as system as a whole.
               # This avoids problems with Nix not being in PATH.
-              inherit (config.nix) package;
+              # Only set package when nix is enabled to avoid errors when
+              # nix-darwin has nix.enable = false (e.g., Determinate Nix users).
+              package = mkIf config.nix.enable config.nix.package;
             };
           };
         }

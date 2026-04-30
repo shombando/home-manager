@@ -49,12 +49,13 @@ in
       default = false;
       description = ''
         Whether to configure {command}`hx` as the default
-        editor using the {env}`EDITOR` environment variable.
+        editor using the {env}`EDITOR` and {env}`VISUAL`
+        environment variables.
       '';
     };
 
     settings = mkOption {
-      type = tomlFormat.type;
+      inherit (tomlFormat) type;
       default = { };
       example = literalExpression ''
         {
@@ -225,10 +226,16 @@ in
       else
         [ cfg.package ];
 
-    home.sessionVariables = mkIf cfg.defaultEditor { EDITOR = "hx"; };
+    home.sessionVariables = mkIf cfg.defaultEditor {
+      EDITOR = "hx";
+      VISUAL = "hx";
+    };
 
     xdg.configFile =
       let
+        pkillPrefix = if pkgs.stdenv.hostPlatform.isDarwin then "/usr" else pkgs.procps;
+        onChange = "${pkillPrefix}/bin/pkill -USR1 -u $USER -x '(hx|\\.hx-wrapped)' || true";
+
         settings =
           let
             hasSettings = cfg.settings != { };
@@ -236,6 +243,7 @@ in
           in
           {
             "helix/config.toml" = mkIf (hasSettings || hasExtraConfig) {
+              inherit onChange;
               source =
                 let
                   configFile = tomlFormat.generate "config.toml" cfg.settings;
@@ -248,6 +256,7 @@ in
                 '';
             };
             "helix/languages.toml" = mkIf (cfg.languages != { }) {
+              inherit onChange;
               source = tomlFormat.generate "helix-languages-config" cfg.languages;
             };
             "helix/ignore" = mkIf (cfg.ignores != [ ]) {
@@ -258,6 +267,7 @@ in
         themes = lib.mapAttrs' (
           n: v:
           lib.nameValuePair "helix/themes/${n}.toml" {
+            inherit onChange;
             source =
               if lib.isString v then
                 pkgs.writeText "helix-theme-${n}" v

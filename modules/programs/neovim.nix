@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  options,
   pkgs,
   ...
 }:
@@ -11,117 +12,63 @@ let
     mkEnableOption
     mkIf
     mkOption
-    mkRemovedOptionModule
+    mkPackageOption
+    optionals
     types
     ;
 
   cfg = config.programs.neovim;
 
-  fileType =
-    (import ../lib/file-type.nix {
-      inherit (config.home) homeDirectory;
-      inherit lib pkgs;
-    }).fileType;
+  inherit
+    (
+      (import ../lib/file-type.nix {
+        inherit (config.home) homeDirectory;
+        inherit lib pkgs;
+      })
+    )
+    fileType
+    ;
 
+  inherit (pkgs) neovimUtils;
   jsonFormat = pkgs.formats.json { };
 
-  pluginWithConfigType = types.submodule {
-    options = {
-      config = mkOption {
-        type = types.nullOr types.lines;
-        description = "Script to configure this plugin. The scripting language should match type.";
-        default = null;
-      };
-
-      type = mkOption {
-        type = types.either (types.enum [
-          "lua"
-          "viml"
-          "teal"
-          "fennel"
-        ]) types.str;
-        description = "Language used in config. Configurations are aggregated per-language.";
-        default = "viml";
-      };
-
-      optional = mkEnableOption "optional" // {
-        description = "Don't load by default (load with :packadd)";
-      };
-
-      plugin = lib.mkPackageOption pkgs.vimPlugins "plugin" {
-        default = null;
-        example = "pkgs.vimPlugins.nvim-treesitter";
-        pkgsText = "pkgs.vimPlugins";
-      };
-
-      runtime = mkOption {
-        default = { };
-        # passing actual "${xdg.configHome}/nvim" as basePath was a bit tricky
-        # due to how fileType.target is implemented
-        type = fileType "programs.neovim.plugins._.runtime" "{var}`xdg.configHome/nvim`" "nvim";
-        example = literalExpression ''
-          { "ftplugin/c.vim".text = "setlocal omnifunc=v:lua.vim.lsp.omnifunc"; }
-        '';
-        description = ''
-          Set of files that have to be linked in nvim config folder.
-        '';
-      };
-    };
+  pluginTypeStateVersion = lib.hm.deprecations.mkStateVersionOptionDefault {
+    inherit (config.home) stateVersion;
+    since = "26.05";
+    optionPath = [
+      "programs"
+      "neovim"
+      "plugins"
+      "PLUGIN"
+      "type"
+    ];
+    legacy.value = "viml";
+    current.value = "lua";
   };
-
-  allPlugins =
-    cfg.plugins
-    ++ lib.optional cfg.coc.enable {
-      type = "viml";
-      plugin = cfg.coc.package;
-      config = cfg.coc.pluginConfig;
-      optional = false;
-    };
-
-  luaPackages = cfg.finalPackage.unwrapped.lua.pkgs;
-  resolvedExtraLuaPackages = cfg.extraLuaPackages luaPackages;
-
-  extraMakeWrapperArgs = lib.optionalString (
-    cfg.extraPackages != [ ]
-  ) ''--suffix PATH : "${lib.makeBinPath cfg.extraPackages}"'';
-  extraMakeWrapperLuaCArgs =
-    lib.optionalString (resolvedExtraLuaPackages != [ ])
-      ''--suffix LUA_CPATH ";" "${
-        lib.concatMapStringsSep ";" luaPackages.getLuaCPath resolvedExtraLuaPackages
-      }"'';
-  extraMakeWrapperLuaArgs =
-    lib.optionalString (resolvedExtraLuaPackages != [ ])
-      ''--suffix LUA_PATH ";" "${
-        lib.concatMapStringsSep ";" luaPackages.getLuaPath resolvedExtraLuaPackages
-      }"'';
 in
 {
   meta.maintainers = with lib.maintainers; [ khaneliman ];
 
   imports = [
-    (mkRemovedOptionModule [
-      "programs"
-      "neovim"
-      "withPython"
-    ] "Python2 support has been removed from neovim.")
-    (mkRemovedOptionModule [
-      "programs"
-      "neovim"
-      "extraPythonPackages"
-    ] "Python2 support has been removed from neovim.")
-    (mkRemovedOptionModule [ "programs" "neovim" "configure" ] ''
-      programs.neovim.configure is deprecated.
-            Other programs.neovim options can override its settings or ignore them.
-            Please use the other options at your disposal:
-              configure.packages.*.opt  -> programs.neovim.plugins = [ { plugin = ...; optional = true; }]
-              configure.packages.*.start  -> programs.neovim.plugins = [ { plugin = ...; }]
-              configure.customRC -> programs.neovim.extraConfig
-    '')
+    (lib.mkRenamedOptionModule
+      [ "programs" "neovim" "extraLuaConfig" ]
+      [ "programs" "neovim" "initLua" ]
+    )
   ];
+
   options = {
     programs.neovim = {
       enable = mkEnableOption "Neovim";
 
+      package = mkPackageOption pkgs "neovim" { default = "neovim-unwrapped"; };
+
+      finalPackage = mkOption {
+        type = types.package;
+        readOnly = true;
+        description = "Resulting customized neovim package.";
+      };
+
+      # Aliases
       viAlias = mkOption {
         type = types.bool;
         default = false;
@@ -146,6 +93,17 @@ in
         '';
       };
 
+      defaultEditor = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether to configure {command}`nvim` as the default
+          editor using the {env}`EDITOR` and {env}`VISUAL`
+          environment variables.
+        '';
+      };
+
+      # Providers & Runtimes
       withNodeJs = mkOption {
         type = types.bool;
         default = false;
@@ -155,38 +113,62 @@ in
         '';
       };
 
-      withRuby = mkOption {
-        type = types.nullOr types.bool;
-        default = true;
+      withPerl = mkOption {
+        type = types.bool;
+        default = false;
         description = ''
-          Enable ruby provider.
+          Enable perl provider. Set to `true` to
+          use Perl plugins.
         '';
       };
 
       withPython3 = mkOption {
         type = types.bool;
-        default = true;
+        inherit
+          (lib.hm.deprecations.mkStateVersionOptionDefault {
+            inherit (config.home) stateVersion;
+            since = "26.05";
+            optionPath = [
+              "programs"
+              "neovim"
+              "withPython3"
+            ];
+            legacy.value = true;
+            current.value = false;
+          })
+          default
+          defaultText
+          ;
         description = ''
           Enable Python 3 provider. Set to `true` to
           use Python 3 plugins.
         '';
       };
 
+      withRuby = mkOption {
+        type = types.bool;
+        inherit
+          (lib.hm.deprecations.mkStateVersionOptionDefault {
+            inherit (config.home) stateVersion;
+            since = "26.05";
+            optionPath = [
+              "programs"
+              "neovim"
+              "withRuby"
+            ];
+            legacy.value = true;
+            current.value = false;
+          })
+          default
+          defaultText
+          ;
+        description = ''
+          Enable ruby provider.
+        '';
+      };
+
       extraPython3Packages = mkOption {
-        # In case we get a plain list, we need to turn it into a function,
-        # as expected by the function in nixpkgs.
-        # The only way to do so is to call `const`, which will ignore its input.
-        type =
-          let
-            fromType = types.listOf types.package;
-          in
-          types.coercedTo fromType (lib.flip lib.warn lib.const ''
-            Assigning a plain list to extraPython3Packages is deprecated.
-                   Please assign a function taking a package set as argument, so
-                     extraPython3Packages = [ pkgs.python3Packages.xxx ];
-                   should become
-                     extraPython3Packages = ps: [ ps.xxx ];
-          '') (types.functionTo fromType);
+        type = types.functionTo (types.listOf types.package);
         default = _: [ ];
         defaultText = literalExpression "ps: [ ]";
         example = literalExpression "pyPkgs: with pyPkgs; [ python-language-server ]";
@@ -198,21 +180,8 @@ in
         '';
       };
 
-      # We get the Lua package from the final package and use its
-      # Lua packageset to evaluate the function that this option was set to.
-      # This ensures that we always use the same Lua version as the Neovim package.
       extraLuaPackages = mkOption {
-        type =
-          let
-            fromType = types.listOf types.package;
-          in
-          types.coercedTo fromType (lib.flip lib.warn lib.const ''
-            Assigning a plain list to extraLuaPackages is deprecated.
-                   Please assign a function taking a package set as argument, so
-                     extraLuaPackages = [ pkgs.lua51Packages.xxx ];
-                   should become
-                     extraLuaPackages = ps: [ ps.xxx ];
-          '') (types.functionTo fromType);
+        type = types.functionTo (types.listOf types.package);
         default = _: [ ];
         defaultText = literalExpression "ps: [ ]";
         example = literalExpression "luaPkgs: with luaPkgs; [ luautf8 ]";
@@ -224,8 +193,34 @@ in
         '';
       };
 
+      # Wrapper Configuration
+      extraName = mkOption {
+        type = types.str;
+        default = "";
+        description = ''
+          Extra name appended to the wrapper package name.
+        '';
+      };
+
+      autowrapRuntimeDeps = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether to automatically wrap the binary with the runtime dependencies of the plugins.
+        '';
+      };
+
+      waylandSupport = mkOption {
+        type = types.bool;
+        default = pkgs.stdenv.isLinux;
+        defaultText = literalExpression "pkgs.stdenv.isLinux";
+        description = ''
+          Whether to enable Wayland clipboard support.
+        '';
+      };
+
       extraWrapperArgs = mkOption {
-        type = with types; listOf str;
+        type = types.listOf types.str;
         default = [ ];
         example = literalExpression ''
           [
@@ -246,53 +241,14 @@ in
         '';
       };
 
-      generatedConfigViml = mkOption {
-        type = types.lines;
-        visible = true;
-        readOnly = true;
-        description = ''
-          Generated vimscript config.
-        '';
+      extraPackages = mkOption {
+        type = types.listOf types.package;
+        default = [ ];
+        example = literalExpression "[ pkgs.shfmt ]";
+        description = "Extra packages available to nvim.";
       };
 
-      generatedConfigs = mkOption {
-        type = types.attrsOf types.lines;
-        visible = true;
-        readOnly = true;
-        example = literalExpression ''
-          {
-            viml = '''
-              " Generated by home-manager
-              map <leader> ,
-            ''';
-
-            lua = '''
-              -- Generated by home-manager
-              vim.opt.background = "dark"
-            ''';
-          }'';
-        description = ''
-          Generated configurations with as key their language (set via type).
-        '';
-      };
-
-      package = lib.mkPackageOption pkgs "neovim" { default = "neovim-unwrapped"; };
-
-      finalPackage = mkOption {
-        type = types.package;
-        readOnly = true;
-        description = "Resulting customized neovim package.";
-      };
-
-      defaultEditor = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Whether to configure {command}`nvim` as the default
-          editor using the {env}`EDITOR` environment variable.
-        '';
-      };
-
+      # Configuration & Plugins
       extraConfig = mkOption {
         type = types.lines;
         default = "";
@@ -304,48 +260,111 @@ in
         '';
       };
 
-      extraLuaConfig = mkOption {
+      sideloadInitLua = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Enable to avoid writing the content of {var}`initLua` to the default
+          location {file}`$XDG_CONFIG_HOME/nvim/init.lua` and load it through
+          neovim wrapper arguments instead.
+
+
+          This is useful if you want to manage your own {file}`init.lua` imperatively.
+        '';
+      };
+
+      initLua = mkOption {
         type = types.lines;
         default = "";
-        example = ''
-          vim.opt.nobackup = true
+        example = lib.literalExpression ''
+          let
+              nvimEarlyInit = lib.mkOrder 500 "set rtp+=vim.opt.rtp:prepend('/home/user/myplugin')";
+              nvimLateInit = lib.mkAfter "vim.opt.signcolumn = 'auto:1-3'";
+          in
+              lib.mkMerge [ nvimEarlyInit nvimLateInit ];
         '';
         description = ''
-          Custom lua lines.
+          Content to be added to {file}`init.lua`.
+
+          Automatically contains the [advised plugin config](https://nixos.org/manual/nixpkgs/stable/#neovim-custom-configuration)
+
+          To specify the order, use `lib.mkOrder`, `lib.mkBefore`, `lib.mkAfter`.
         '';
       };
 
-      extraPackages = mkOption {
-        type = with types; listOf package;
-        default = [ ];
-        example = literalExpression "[ pkgs.shfmt ]";
-        description = "Extra packages available to nvim.";
-      };
+      plugins =
+        let
+          pluginWithConfigType = types.submodule {
+            options = {
+              config = mkOption {
+                type = types.nullOr types.lines;
+                description = "Script to configure this plugin. The scripting language should match type.";
+                default = null;
+              };
 
-      plugins = mkOption {
-        type = with types; listOf (either package pluginWithConfigType);
-        default = [ ];
-        example = literalExpression ''
-          with pkgs.vimPlugins; [
-            yankring
-            vim-nix
-            { plugin = vim-startify;
-              config = "let g:startify_change_to_vcs_root = 0";
-            }
-          ]
-        '';
-        description = ''
-          List of vim plugins to install optionally associated with
-          configuration to be placed in init.vim.
+              type = mkOption {
+                type = types.either (types.enum [
+                  "lua"
+                  "viml"
+                  "teal"
+                  "fennel"
+                ]) types.str;
+                description = "Language used in config. Configurations are aggregated per-language.";
+                default = pluginTypeStateVersion.effectiveDefault;
+                inherit (pluginTypeStateVersion) defaultText;
+              };
 
-          This option is mutually exclusive with {var}`configure`.
-        '';
-      };
+              optional = mkEnableOption "optional" // {
+                description = "Don't load by default (load with :packadd)";
+              };
+
+              plugin = mkPackageOption pkgs.vimPlugins "plugin" {
+                default = null;
+                example = "pkgs.vimPlugins.nvim-treesitter";
+                pkgsText = "pkgs.vimPlugins";
+              };
+
+              runtime = mkOption {
+                default = { };
+                # passing actual "${xdg.configHome}/nvim" as basePath was a bit tricky
+                # due to how fileType.target is implemented
+                type = fileType "programs.neovim.plugins._.runtime" "{var}`xdg.configHome/nvim`" "nvim";
+                example = literalExpression ''
+                  { "ftplugin/c.vim".text = "setlocal omnifunc=v:lua.vim.lsp.omnifunc"; }
+                '';
+                description = ''
+                  Set of files that have to be linked in nvim config folder.
+                '';
+              };
+            };
+          };
+
+        in
+        mkOption {
+          type = types.listOf (types.either types.package pluginWithConfigType);
+          default = [ ];
+          example = literalExpression ''
+            with pkgs.vimPlugins;
+            [
+              yankring
+              vim-nix
+              { plugin = vim-startify;
+                config = "let g:startify_change_to_vcs_root = 0";
+              }
+            ]
+          '';
+          description = ''
+            List of vim plugins to install optionally associated with
+            configuration to be placed in init.vim.
+
+            This option is mutually exclusive with {var}`configure`.
+          '';
+        };
 
       coc = {
         enable = mkEnableOption "Coc";
 
-        package = lib.mkPackageOption pkgs "coc-nvim" {
+        package = mkPackageOption pkgs "coc-nvim" {
           default = [
             "vimPlugins"
             "coc-nvim"
@@ -375,7 +394,7 @@ in
                   filetypes = [ "haskell" "lhaskell" ];
                 };
               };
-            };
+            }
           '';
           description = ''
             Extra configuration lines to add to
@@ -392,13 +411,74 @@ in
           description = "Script to configure CoC. Must be viml.";
         };
       };
+
+      # Generated / Read-Only
+      generatedConfigViml = mkOption {
+        type = types.lines;
+        visible = true;
+        readOnly = true;
+        description = ''
+          Generated vimscript config.
+        '';
+      };
+
+      generatedConfigs = mkOption {
+        type = types.attrsOf types.lines;
+        visible = true;
+        readOnly = true;
+        example = literalExpression ''
+          {
+            viml = '''
+              " Generated by home-manager
+              map <leader> ,
+            ''';
+
+            lua = '''
+              -- Generated by home-manager
+              vim.opt.background = "dark"
+            ''';
+          }
+        '';
+        description = ''
+          Generated configurations with as key their language (set via type).
+        '';
+      };
     };
   };
 
-  config =
+  config = mkIf cfg.enable (
     let
+      legacyPluginTypeWarnings = lib.hm.deprecations.mkStateVersionListSubmoduleWarnings {
+        inherit (config.home) stateVersion;
+        since = "26.05";
+        baseWarning = pluginTypeStateVersion.warning;
+        definitions = options.programs.neovim.plugins.definitionsWithLocations;
+        shouldWarnEntry = lib.hm.deprecations.mkListEntryOmittedFieldPredicate {
+          omittedField = "type";
+          triggerField = "config";
+        };
+        describeEntry =
+          entry:
+          if entry.value ? plugin && entry.value.plugin != null then
+            "plugin `${lib.getName entry.value.plugin}`"
+          else
+            "a plugin entry";
+        extraEntryWarning =
+          _entry:
+          ''Set `type = "viml"` or `type = "lua"` on that plugin entry to make the config language explicit.'';
+      };
+
+      allPlugins =
+        cfg.plugins
+        ++ lib.optional cfg.coc.enable {
+          type = "viml";
+          plugin = cfg.coc.package;
+          config = cfg.coc.pluginConfig;
+          optional = false;
+        };
+
       defaultPlugin = {
-        type = "viml";
+        type = pluginTypeStateVersion.effectiveDefault;
         plugin = null;
         config = null;
         optional = false;
@@ -407,83 +487,150 @@ in
 
       # transform all plugins into a standardized attrset
       pluginsNormalized = map (
-        x: defaultPlugin // (if (x ? plugin) then x else { plugin = x; })
+        x: defaultPlugin // (if x ? plugin then x else { plugin = x; })
       ) allPlugins;
 
-      suppressNotVimlConfig = p: if p.type != "viml" then p // { config = null; } else p;
+      # remove attributes not understood by nixpkgs' "makeVimPackageInfo"
+      suppressIncompatibleConfig =
+        p:
+        lib.filterAttrs (
+          n: _v:
+          builtins.elem n [
+            "plugin"
+            "optional"
+            "config"
+          ]
+        ) (if p.type != "viml" then p // { config = null; } else p);
 
-      neovimConfig = pkgs.neovimUtils.makeNeovimConfig {
-        inherit (cfg)
-          extraPython3Packages
-          withPython3
-          withRuby
-          viAlias
-          vimAlias
-          ;
-        withNodeJs = cfg.withNodeJs || cfg.coc.enable;
-        plugins = map suppressNotVimlConfig pluginsNormalized;
-        customRC = cfg.extraConfig;
+      # Wrapper Arguments Construction
+      extraMakeWrapperArgs = optionals (cfg.extraPackages != [ ]) [
+        "--suffix"
+        "PATH"
+        ":"
+        (lib.makeBinPath cfg.extraPackages)
+      ];
+
+      nixpkgsCompatiblePlugins = map suppressIncompatibleConfig pluginsNormalized;
+      vimPackageInfo = neovimUtils.makeVimPackageInfo nixpkgsCompatiblePlugins;
+
+      wrappedNeovim' =
+        (pkgs.wrapNeovimUnstable cfg.package {
+          withNodeJs = cfg.withNodeJs || cfg.coc.enable;
+          plugins = nixpkgsCompatiblePlugins;
+
+          inherit (cfg)
+            extraLuaPackages
+            extraName
+            withPython3
+            withRuby
+            withPerl
+            viAlias
+            vimAlias
+            autowrapRuntimeDeps
+            waylandSupport
+            ;
+
+          extraPython3Packages =
+            ps: (cfg.extraPython3Packages ps) ++ (lib.concatMap (f: f ps) vimPackageInfo.pluginPython3Packages);
+          neovimRcContent = cfg.extraConfig;
+          wrapperArgs = cfg.extraWrapperArgs ++ extraMakeWrapperArgs;
+          wrapRc = false;
+        }).overrideAttrs
+          {
+
+            # nixpkgs implementation dependend: avoid nixpkgs adding rtp/packpath wrapping arguments
+            packpathDirs.myNeovimPackages = {
+              start = [ ];
+              opt = [ ];
+            };
+          };
+    in
+    {
+      warnings = legacyPluginTypeWarnings;
+
+      programs.neovim = {
+        generatedConfigViml = cfg.extraConfig;
+
+        generatedConfigs =
+          let
+            grouped = lib.groupBy (x: x.type) pluginsNormalized;
+            configsOnly = lib.foldl (acc: p: if p.config != null then acc ++ [ p.config ] else acc) [ ];
+          in
+          lib.mapAttrs (_name: vals: lib.concatStringsSep "\n" (configsOnly vals)) grouped;
+
+        finalPackage = wrappedNeovim';
       };
 
-      wrappedNeovim' = pkgs.wrapNeovimUnstable cfg.package (
-        neovimConfig
-        // {
-          wrapperArgs =
-            (lib.escapeShellArgs (neovimConfig.wrapperArgs ++ cfg.extraWrapperArgs))
-            + " "
-            + extraMakeWrapperArgs
-            + " "
-            + extraMakeWrapperLuaCArgs
-            + " "
-            + extraMakeWrapperLuaArgs;
-          wrapRc = false;
-        }
+      home = {
+        packages = [ cfg.finalPackage ];
+
+        sessionVariables = mkIf cfg.defaultEditor {
+          EDITOR = "nvim";
+          VISUAL = "nvim";
+        };
+
+        shellAliases = mkIf cfg.vimdiffAlias { vimdiff = "nvim -d"; };
+      };
+
+      programs.neovim.extraPackages = mkIf cfg.autowrapRuntimeDeps vimPackageInfo.runtimeDeps;
+
+      programs.neovim.extraWrapperArgs = mkIf (cfg.sideloadInitLua && cfg.initLua != "") [
+        "--add-flags"
+        ''--cmd 'lua dofile("${pkgs.writeText "wrapper-init-lua" cfg.initLua}")' ''
+      ];
+
+      programs.neovim.initLua =
+        let
+          # using default 'foldmarker', to be used with foldmethod=marker
+          foldedLuaBlock =
+            title: content:
+            if (content != "") then
+              ''
+                -- ${title} {{{
+                ${content}
+                -- }}}
+              ''
+            else
+              null;
+        in
+        lib.mkMerge [
+          (lib.mkIf (wrappedNeovim'.luaRcContent != "") (
+            # we want it to appear rather early
+            lib.mkOrder 200 wrappedNeovim'.luaRcContent
+          ))
+          (lib.mkIf (lib.hasAttr "lua" cfg.generatedConfigs && cfg.generatedConfigs.lua != "") (
+            lib.mkAfter (foldedLuaBlock "user-associated plugin config" cfg.generatedConfigs.lua)
+          ))
+
+        ];
+
+      # link the packpath in expected folder so that even unwrapped neovim can pick
+      # home-manager's plugins
+      xdg.dataFile."nvim/site/pack/hm" =
+        let
+          packpathDirs.hm = vimPackageInfo.vimPackage;
+        in
+        {
+          enable = allPlugins != [ ];
+          source = "${pkgs.neovimUtils.packDir packpathDirs}/pack/hm";
+        };
+
+      xdg.configFile = lib.mkMerge (
+        # writes runtime
+        (map (x: x.runtime) pluginsNormalized)
+        ++ [
+          {
+            "nvim/init.lua" = mkIf (cfg.initLua != "") {
+              enable = !cfg.sideloadInitLua;
+              text = cfg.initLua;
+            };
+
+            "nvim/coc-settings.json" = mkIf cfg.coc.enable {
+              source = jsonFormat.generate "coc-settings.json" cfg.coc.settings;
+            };
+          }
+        ]
       );
-    in
-    mkIf cfg.enable {
-
-      programs.neovim.generatedConfigViml = neovimConfig.neovimRcContent;
-
-      programs.neovim.generatedConfigs =
-        let
-          grouped = lib.lists.groupBy (x: x.type) pluginsNormalized;
-          configsOnly = lib.foldl (acc: p: if p.config != null then acc ++ [ p.config ] else acc) [ ];
-        in
-        lib.mapAttrs (name: vals: lib.concatStringsSep "\n" (configsOnly vals)) grouped;
-
-      home.packages = [ cfg.finalPackage ];
-
-      home.sessionVariables = mkIf cfg.defaultEditor { EDITOR = "nvim"; };
-
-      home.shellAliases = mkIf cfg.vimdiffAlias { vimdiff = "nvim -d"; };
-
-      xdg.configFile =
-        let
-          hasLuaConfig = lib.hasAttr "lua" config.programs.neovim.generatedConfigs;
-        in
-        lib.mkMerge (
-          # writes runtime
-          (map (x: x.runtime) pluginsNormalized)
-          ++ [
-            {
-              "nvim/init.lua" =
-                let
-                  luaRcContent =
-                    lib.optionalString (
-                      wrappedNeovim'.initRc != ""
-                    ) "vim.cmd [[source ${pkgs.writeText "nvim-init-home-manager.vim" wrappedNeovim'.initRc}]]\n"
-                    + config.programs.neovim.extraLuaConfig
-                    + lib.optionalString hasLuaConfig config.programs.neovim.generatedConfigs.lua;
-                in
-                mkIf (luaRcContent != "") { text = luaRcContent; };
-
-              "nvim/coc-settings.json" = mkIf cfg.coc.enable {
-                source = jsonFormat.generate "coc-settings.json" cfg.coc.settings;
-              };
-            }
-          ]
-        );
-
-      programs.neovim.finalPackage = wrappedNeovim';
-    };
+    }
+  );
 }

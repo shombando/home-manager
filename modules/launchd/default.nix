@@ -14,7 +14,7 @@ let
   dstDir = "${config.home.homeDirectory}/Library/LaunchAgents";
 
   launchdConfig =
-    { config, name, ... }:
+    { name, ... }:
     {
       options = {
         enable = lib.mkEnableOption name;
@@ -43,11 +43,35 @@ let
       };
     };
 
-  toAgent = config: pkgs.writeText "${config.Label}.plist" (toPlist { escape = true; } config);
+  # mutateConfig calls /bin/sh with /bin/wait4path to wait for /nix/store before
+  # running the original Program and ProgramArguments. This is intentional to
+  # fix the issue where launchd starts the agent before /nix/store is ready
+  # (before the Nix store is mounted.)
+  mutateConfig =
+    cnf:
+    let
+      args =
+        lib.optional (cnf.Program != null) cnf.Program
+        ++ lib.optionals (cnf.ProgramArguments != null) cnf.ProgramArguments;
+    in
+    (removeAttrs cnf [
+      "Program"
+      "ProgramArguments"
+    ])
+    // {
+      ProgramArguments = [
+        "/bin/sh"
+        "-c"
+        "/bin/wait4path /nix/store && exec ${lib.escapeShellArgs args}"
+      ];
+    };
 
-  agentPlists = lib.mapAttrs' (n: v: lib.nameValuePair "${v.config.Label}.plist" (toAgent v.config)) (
-    lib.filterAttrs (n: v: v.enable) cfg.agents
-  );
+  toAgent =
+    config: pkgs.writeText "${config.Label}.plist" (toPlist { escape = true; } (mutateConfig config));
+
+  agentPlists = lib.mapAttrs' (
+    _n: v: lib.nameValuePair "${v.config.Label}.plist" (toAgent v.config)
+  ) (lib.filterAttrs (_n: v: v.enable) cfg.agents);
 
   agentsDrv = pkgs.runCommand "home-manager-agents" { } ''
     mkdir -p "$out"
@@ -270,9 +294,7 @@ in
             setupLaunchAgents
 
             # Restore errexit
-            if [[ -o errexit ]]; then
-              set -e
-            fi
+            set -e
           '';
     })
   ];

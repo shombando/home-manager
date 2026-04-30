@@ -21,6 +21,7 @@ let
   };
 
   tests = {
+    argv = import ./argv.nix;
     keybindings = import ./keybindings.nix;
     tasks = import ./tasks.nix;
     mcp = import ./mcp.nix;
@@ -34,6 +35,10 @@ let
   unknownTests = lib.mapAttrs' (
     k: v: lib.nameValuePair "vscode-${k}-unknown" (v unknownPackage)
   ) tests;
+
+  nullPackageTests = {
+    vscode-null-package = import ./null-package.nix;
+  };
 in
 
-knownTests // unknownTests
+knownTests // unknownTests // nullPackageTests

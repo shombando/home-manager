@@ -135,16 +135,22 @@ in
         default = { };
         type =
           with types;
-          lazyAttrsOf (oneOf [
-            str
-            int
-            path
-          ]);
+          lazyAttrsOf (
+            nullOr (oneOf [
+              str
+              path
+              int
+              float
+            ])
+          );
         example = {
           MAILCHECK = 30;
         };
         description = ''
           Environment variables that will be set for the Bash session.
+
+          Setting a value to `null` will skip setting the variable at all, which
+          may be useful when overriding.
         '';
       };
 
@@ -204,7 +210,7 @@ in
   config =
     let
       aliasesStr = lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (k: v: "alias ${k}=${lib.escapeShellArg v}") cfg.shellAliases
+        lib.mapAttrsToList (k: v: "alias -- ${k}=${lib.escapeShellArg v}") cfg.shellAliases
       );
 
       shoptsStr =

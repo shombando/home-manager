@@ -130,6 +130,7 @@ in
           - `HYPRLAND_INSTANCE_SIGNATURE`
           - `WAYLAND_DISPLAY`
           - `XDG_CURRENT_DESKTOP`
+          - `XDG_SESSION_TYPE`
         '';
       };
 
@@ -140,6 +141,7 @@ in
           "HYPRLAND_INSTANCE_SIGNATURE"
           "WAYLAND_DISPLAY"
           "XDG_CURRENT_DESKTOP"
+          "XDG_SESSION_TYPE"
         ];
         example = [ "--all" ];
         description = ''
@@ -164,6 +166,14 @@ in
 
     xwayland.enable = lib.mkEnableOption "XWayland" // {
       default = true;
+      description = ''
+        Whether or not to enable XWayland.
+
+        Overrides the `enableXWayland` option of the Hyprland package.
+
+        In newer versions of Hyprland, you can use the {option}`wayland.windowManager.hyprland.settings.xwayland`
+        option to avoid recompiling Hyprland.
+      '';
     };
 
     settings = lib.mkOption {
@@ -224,36 +234,41 @@ in
       '';
       default = { };
       type = lib.types.attrsOf (
-        lib.types.submodule (
-          { name, config, ... }:
-          {
-            options = {
-              settings = lib.mkOption {
-                type = (with lib.types; attrsOf (listOf str)) // {
-                  description = "Hyprland binds";
-                };
-                default = { };
-                description = ''
-                  Hyprland binds to be put in the submap
-                '';
-                example = lib.literalExpression ''
-                  {
-                    binde = [
-                     ", right, resizeactive, 10 0"
-                     ", left, resizeactive, -10 0"
-                     ", up, resizeactive, 0 -10"
-                     ", down, resizeactive, 0 10"
-                    ];
-
-                    bind = [
-                      ", escape, submap, reset"
-                    ];
-                  }
-                '';
-              };
+        lib.types.submodule {
+          options = {
+            onDispatch = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+              description = ''
+                Submap to use after a dispatch. Can either be a name or `reset` to disable submap after any dispatch.
+              '';
+              example = "reset";
             };
-          }
-        )
+            settings = lib.mkOption {
+              type = (with lib.types; attrsOf (listOf str)) // {
+                description = "Hyprland binds";
+              };
+              default = { };
+              description = ''
+                Hyprland binds to be put in the submap
+              '';
+              example = lib.literalExpression ''
+                {
+                  binde = [
+                   ", right, resizeactive, 10 0"
+                   ", left, resizeactive, -10 0"
+                   ", up, resizeactive, 0 -10"
+                   ", down, resizeactive, 0 10"
+                  ];
+
+                  bind = [
+                    ", escape, submap, reset"
+                  ];
+                }
+              '';
+            };
+          };
+        }
       );
       example = lib.literalExpression ''
         {
@@ -338,21 +353,23 @@ in
     warnings =
       let
         inconsistent =
-          (cfg.systemd.enable || cfg.plugins != [ ]) && cfg.extraConfig == "" && cfg.settings == { };
-        warning = "You have enabled hyprland.systemd.enable or listed plugins in hyprland.plugins but do not have any configuration in hyprland.settings or hyprland.extraConfig. This is almost certainly a mistake.";
+          (cfg.systemd.enable || cfg.plugins != [ ])
+          && cfg.extraConfig == ""
+          && cfg.settings == { }
+          && cfg.submaps == { };
+        warning = "You have enabled hyprland.systemd.enable or listed plugins in hyprland.plugins but do not have any configuration in hyprland.settings, hyprland.extraConfig or hyprland.submaps. This is almost certainly a mistake.";
 
         filterNonBinds =
-          attrs:
-          builtins.filter (n: builtins.match ''bind[[:lower:]]*'' n == null) (builtins.attrNames attrs);
+          attrs: builtins.filter (n: builtins.match "bind[[:lower:]]*" n == null) (builtins.attrNames attrs);
 
         # attrset of { <submap name> = <list of non bind* keys>; } for all submaps
         submapWarningsAttrset = builtins.mapAttrs (
-          name: submap: filterNonBinds submap.settings
+          _name: submap: filterNonBinds submap.settings
         ) cfg.submaps;
 
         submapWarnings = lib.mapAttrsToList (submapName: nonBinds: ''
-          wayland.windowManager.hyprland.submaps."${submapName}".settings: found non-bind entries: [${builtins.toString nonBinds}], which will have no effect in a submap
-        '') (lib.filterAttrs (n: v: v != [ ]) submapWarningsAttrset);
+          wayland.windowManager.hyprland.submaps."${submapName}".settings: found non-bind entries: [${toString nonBinds}], which will have no effect in a submap
+        '') (lib.filterAttrs (_n: v: v != [ ]) submapWarningsAttrset);
       in
       submapWarnings ++ lib.optional inconsistent warning;
 
@@ -376,13 +393,13 @@ in
                   mkEntry =
                     entry: if lib.types.package.check entry then "${entry}/lib/lib${entry.pname}.so" else entry;
                 in
-                map (p: "hyprctl plugin load ${mkEntry p}") cfg.plugins;
+                map (p: "hyprctl plugin load ${mkEntry p}") plugins;
             };
             inherit importantPrefixes;
           };
 
         mkSubMap = name: attrs: ''
-          submap = ${name}
+          submap = ${name}${lib.optionalString (attrs.onDispatch != "") ", ${attrs.onDispatch}"}
           ${
             lib.hm.generators.toHyprconf {
               attrs = attrs.settings;
